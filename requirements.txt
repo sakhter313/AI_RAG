@@ -1,0 +1,7 @@
+streamlit
+embedchain
+langchain-groq
+langchain-core
+sentence-transformers
+torch  # Required for sentence-transformers
+huggingface-hub
