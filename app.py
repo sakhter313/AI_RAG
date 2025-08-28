@@ -80,27 +80,31 @@ with st.sidebar:
 # Function to process uploaded files and initialize embedchain app
 @st.cache_resource
 def initialize_embedchain_app(uploaded_files):
-    app = App()
-    for uploaded_file in uploaded_files:
-        file_extension = uploaded_file.name.split('.')[-1].lower()
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            tmp_path = tmp_file.name
+    try:
+        app = App()
+        for uploaded_file in uploaded_files:
+            file_extension = uploaded_file.name.split('.')[-1].lower()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as tmp_file:
+                tmp_file.write(uploaded_file.getvalue())
+                tmp_path = tmp_file.name
+            
+            try:
+                if file_extension == 'pdf':
+                    app.add("local:" + tmp_path, data_type="pdf")
+                elif file_extension == 'txt':
+                    app.add("local:" + tmp_path, data_type="text")
+                else:
+                    st.warning(f"Unsupported file type: {uploaded_file.name}. Skipping.")
+            finally:
+                os.unlink(tmp_path)
         
-        try:
-            if file_extension == 'pdf':
-                app.add("local:" + tmp_path, data_type="pdf")
-            elif file_extension == 'txt':
-                app.add("local:" + tmp_path, data_type="text")
-            else:
-                st.warning(f"Unsupported file type: {uploaded_file.name}. Skipping.")
-        finally:
-            os.unlink(tmp_path)
-    
-    if not app.get_all_docs():
-        raise ValueError("No valid documents uploaded or processed.")
-    
-    return app
+        if not app.get_all_docs():
+            raise ValueError("No valid documents uploaded or processed.")
+        
+        return app
+    except Exception as e:
+        st.error(f"Failed to initialize embedchain app: {str(e)}")
+        return None
 
 # Main Streamlit app
 st.title("🤖 Chat with Your Documents")
@@ -119,41 +123,42 @@ else:
     groq_api_key = st.secrets["GROQ_API_KEY"]
 
     if uploaded_files:
-        try:
-            with st.spinner("Processing documents and building index... This may take a moment."):
-                app = initialize_embedchain_app(tuple(uploaded_files))
+        app = initialize_embedchain_app(tuple(uploaded_files))
+        if app is None:
+            st.stop()
+
+        st.success("Index built successfully! Start chatting below.")
+        
+        # Set up LLM with selected model
+        llm = ChatGroq(groq_api_key=groq_api_key, model=selected_model)
+        
+        # Initialize chat history
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+        if "chat_history" not in st.session_state:
+            st.session_state.chat_history = []
+        
+        # Display chat history
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(f'<div class="chat-message {message["role"]}-message">{message["content"]}</div>', unsafe_allow_html=True)
+                if "sources" in message:
+                    with st.expander("🔍 Sources"):
+                        for i, doc in enumerate(message["sources"], 1):
+                            st.markdown(f"**Chunk {i}:**")
+                            st.write(doc.page_content)
+                            st.write(f"*Source: {doc.metadata.get('source', 'unknown')} | Page: {doc.metadata.get('page', 'N/A')}*")
+                            st.divider()
+        
+        # Chat input
+        if prompt := st.chat_input("Ask a question about the documents:"):
+            # Add user message
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(f'<div class="chat-message user-message">{prompt}</div>', unsafe_allow_html=True)
             
-            st.success("Index built successfully! Start chatting below.")
-            
-            # Set up LLM with selected model
-            llm = ChatGroq(groq_api_key=groq_api_key, model=selected_model)
-            
-            # Initialize chat history
-            if "messages" not in st.session_state:
-                st.session_state.messages = []
-            if "chat_history" not in st.session_state:
-                st.session_state.chat_history = []
-            
-            # Display chat history
-            for message in st.session_state.messages:
-                with st.chat_message(message["role"]):
-                    st.markdown(f'<div class="chat-message {message["role"]}-message">{message["content"]}</div>', unsafe_allow_html=True)
-                    if "sources" in message:
-                        with st.expander("🔍 Sources"):
-                            for i, doc in enumerate(message["sources"], 1):
-                                st.markdown(f"**Chunk {i}:**")
-                                st.write(doc.page_content)
-                                st.write(f"*Source: {doc.metadata.get('source', 'unknown')} | Page: {doc.metadata.get('page', 'N/A')}*")
-                                st.divider()
-            
-            # Chat input
-            if prompt := st.chat_input("Ask a question about the documents:"):
-                # Add user message
-                st.session_state.messages.append({"role": "user", "content": prompt})
-                with st.chat_message("user"):
-                    st.markdown(f'<div class="chat-message user-message">{prompt}</div>', unsafe_allow_html=True)
-                
-                with st.spinner("Thinking..."):
+            with st.spinner("Thinking..."):
+                try:
                     # Query embedchain app
                     response = app.query(prompt, llm=llm)
                     answer = response.get("answer", "Sorry, I couldn't generate a response.")
@@ -180,8 +185,7 @@ else:
                                     st.write(doc.page_content)
                                     st.write(f"*Source: {doc.metadata.get('source', 'unknown')} | Page: {doc.metadata.get('page', 'N/A')}*")
                                     st.divider()
-        
-        except Exception as e:
-            st.error(f"Error processing documents: {str(e)}")
+                except Exception as e:
+                    st.error(f"Error during query: {str(e)}")
     else:
         st.info("Please upload at least one document to get started.")
